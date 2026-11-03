@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Portal Filters</title>
+<style>
+:root{--bg:#07080c;--ink:#f2f4f8;--dim:#8b93a7;--glow:#7cf3d0;--chip:#151824;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#07080c;--ink:#f2f4f8}}
+:root[data-theme="dark"]{--bg:#07080c;--ink:#f2f4f8}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:"Space Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+#stage{position:relative;height:100%;display:flex;flex-direction:column}
+canvas{flex:1;min-height:0;width:100%;object-fit:contain;background:#000;touch-action:none}
+video{display:none}
+#bar{display:flex;gap:8px;overflow-x:auto;padding:10px 12px;background:var(--bg)}
+.chip{flex:0 0 auto;border:1px solid #2a3046;background:var(--chip);color:var(--ink);padding:10px 16px;border-radius:999px;font:inherit;font-size:15px;cursor:pointer}
+.chip[aria-pressed="true"]{border-color:var(--glow);color:var(--glow)}
+.chip:focus-visible,#go:focus-visible{outline:2px solid var(--glow);outline-offset:2px}
+#hud{font-size:22px;font-weight:700;position:absolute;left:0;right:0;top:env(safe-area-inset-top,0px);padding:12px 16px;font-size:22px;font-weight:700;color:var(--ink);text-shadow:0 1px 4px #000;pointer-events:none}
+#intro{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:32px;text-align:center;background:var(--bg)}
+#intro h1{font-size:clamp(34px,7vw,64px);margin:0;letter-spacing:-.02em;font-weight:700}
+#intro p{margin:0;max-width:34ch;color:var(--dim);font-size:17px;line-height:1.5}
+#go{border:0;background:var(--glow);color:#04130e;font:inherit;font-weight:700;font-size:18px;padding:14px 30px;border-radius:14px;cursor:pointer}
+#err{color:#ff8a8a;max-width:40ch;font-size:15px;min-height:1em}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div id="hud"></div>
+  <div id="bar" role="group" aria-label="Filters"></div>
+  <video id="v" playsinline muted></video>
+  <div id="intro">
+    <h1>Portal Filters</h1>
+    <p>Make an L with the thumb and index finger of both hands. The window between your hands changes reality.</p>
+    <button id="go">Start camera</button>
+    <div id="err" role="status"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('c'), ctx = cv.getContext('2d', {willReadFrequently:true}), video = $('v');
+const tmp = document.createElement('canvas'), tctx = tmp.getContext('2d', {willReadFrequently:true});
+const clamp = (x,a=0,b=255) => x<a?a:x>b?b:x;
+
+// ---- filters: each gets ImageData, returns nothing (edits in place) ----
+const lum = (d,i) => 0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+const FILTERS = [
+  {name:'Thermal', s:3, fn(im){const d=im.data;for(let i=0;i<d.length;i+=4){const v=lum(d,i)/255;
+    d[i]=clamp((1.5-Math.abs(4*v-3))*255);d[i+1]=clamp((1.5-Math.abs(4*v-2))*255);d[i+2]=clamp((1.5-Math.abs(4*v-1))*255);}}},
+  {name:'Glitch', s:2, fn(im){const d=im.data,w=im.width,h=im.height,src=new Uint8ClampedArray(d),sh=6;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){const i=(y*w+x)*4;
+      d[i]=src[(y*w+clamp(x-sh,0,w-1))*4];d[i+2]=src[(y*w+clamp(x+sh,0,w-1))*4+2];}
+    const c=d.slice();for(let k=0;k<5;k++){const y0=Math.random()*h|0,t=3+Math.random()*10|0,off=(Math.random()*40-20)|0;
+      for(let y=y0;y<Math.min(y0+t,h);y++)for(let x=0;x<w;x++){const j=(y*w+x)*4,n=(y*w+clamp(x+off,0,w-1))*4;d[j]=c[n];d[j+1]=c[n+1];d[j+2]=c[n+2];}}}},
+  {name:'Pixelate', s:14, fn(){}},
+  {name:'Invert', s:2, fn(im){const d=im.data;for(let i=0;i<d.length;i+=4){d[i]=255-d[i];d[i+1]=255-d[i+1];d[i+2]=255-d[i+2];}}},
+  {name:'Neon edge', s:3, fn(im){const d=im.data,w=im.width,h=im.height,g=new Float32Array(w*h);
+    for(let i=0;i<w*h;i++)g[i]=lum(d,i*4);
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){const i=y*w+x;let m=0;
+      if(x>0&&y>0&&x<w-1&&y<h-1){const gx=g[i+1]-g[i-1]+g[i+w+1]-g[i+w-1]+g[i-w+1]-g[i-w-1],gy=g[i+w]-g[i-w]+g[i+w+1]-g[i-w+1]+g[i+w-1]-g[i-w-1];m=clamp(Math.hypot(gx,gy)*1.4);}
+      d[i*4]=m*0.2;d[i*4+1]=m;d[i*4+2]=m;}}},
+  {name:'Rainbow', s:3, fn(im){const a=(performance.now()/12)%360*Math.PI/180,c=Math.cos(a),s=Math.sin(a),d=im.data;
+    const m=[.213+c*.787-s*.213,.715-c*.715-s*.715,.072-c*.072+s*.928,.213-c*.213+s*.143,.715+c*.285+s*.140,.072-c*.072-s*.283,.213-c*.213-s*.787,.715-c*.715+s*.715,.072+c*.928+s*.072];
+    for(let i=0;i<d.length;i+=4){const r=d[i],g=d[i+1],b=d[i+2];
+      d[i]=clamp(m[0]*r+m[1]*g+m[2]*b);d[i+1]=clamp(m[3]*r+m[4]*g+m[5]*b);d[i+2]=clamp(m[6]*r+m[7]*g+m[8]*b);}}},
+  {name:'Night vision', s:3, fn(im){const d=im.data;for(let i=0;i<d.length;i+=4){const l=clamp(lum(d,i)*1.6+Math.random()*30-15);
+    d[i]=l*.15;d[i+1]=l;d[i+2]=l*.25;}}},
+  {name:'Dots', s:3, fn(im){const d=im.data,w=im.width,h=im.height,src=new Uint8ClampedArray(d),c=5;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+      const cx=Math.min((Math.floor(x/c)+.5)*c,w-1)|0,cy=Math.min((Math.floor(y/c)+.5)*c,h-1)|0,j=(cy*w+cx)*4;
+      const rad=c*.75*Math.sqrt(lum(src,j)/255),i=(y*w+x)*4;
+      if(Math.hypot(x-cx,y-cy)<rad){d[i]=clamp(src[j]*1.3);d[i+1]=clamp(src[j+1]*1.3);d[i+2]=clamp(src[j+2]*1.3);}else{d[i]=d[i+1]=d[i+2]=8;}}}},
+  {name:'Red', s:3, fn(im){const d=im.data;for(let i=0;i<d.length;i+=4){d[i+1]=0;d[i+2]=0;}}}
+];
+let cur = 0, prev = null, tStart = 0, auto = true, lastSwitch = performance.now();
+const bar = $('bar');
+const autoChip = document.createElement('button');autoChip.className='chip';autoChip.textContent='Auto';autoChip.setAttribute('aria-pressed',true);
+autoChip.onclick=()=>{auto=!auto;lastSwitch=performance.now();autoChip.setAttribute('aria-pressed',auto);};bar.appendChild(autoChip);
+function setFilter(i){if(i===cur)return;prev=cur;tStart=performance.now();cur=i;[...bar.children].forEach((c,j)=>{if(j>0)c.setAttribute('aria-pressed',j-1===i);});}
+FILTERS.forEach((f,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=f.name;b.setAttribute('aria-pressed',i===0);
+  b.onclick=()=>{auto=false;autoChip.setAttribute('aria-pressed',false);setFilter(i);};bar.appendChild(b);});
+
+// ---- portal rectangle (smoothed) ----
+let quad = null, lastSeen = 0, hands = null, busy = false, handsResult = null;
+
+const rawc = document.createElement('canvas'), rawx = rawc.getContext('2d');
+function drawFilter(f, r, alpha, src){
+  const rw = Math.max(r.x2-r.x1,8), rh = Math.max(r.y2-r.y1,8);
+  const tw = Math.max(Math.round(rw/f.s),4), th = Math.max(Math.round(rh/f.s),4);
+  if (tmp.width!==tw || tmp.height!==th){ tmp.width = tw; tmp.height = th; }
+  tctx.imageSmoothingEnabled = true;
+  tctx.drawImage(src, r.x1, r.y1, rw, rh, 0, 0, tw, th);
+  const im = tctx.getImageData(0,0,tw,th); f.fn(im); tctx.putImageData(im,0,0);
+  ctx.imageSmoothingEnabled = (f.name !== 'Pixelate');
+  ctx.save();
+  ctx.beginPath(); quad.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y)); ctx.closePath(); ctx.clip();
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(tmp, 0,0,tw,th, r.x1, r.y1, rw, rh);
+  ctx.restore();
+}
+function applyPortal(r){
+  if (prev !== null){
+    const t = Math.min((performance.now()-tStart)/700, 1), e = t*t*(3-2*t);
+    if (rawc.width!==cv.width || rawc.height!==cv.height){ rawc.width = cv.width; rawc.height = cv.height; }
+    rawx.drawImage(cv,0,0);
+    drawFilter(FILTERS[prev], r, 1, rawc);
+    drawFilter(FILTERS[cur], r, e, rawc);
+    if (t >= 1) prev = null;
+  } else drawFilter(FILTERS[cur], r, 1, cv);
+}
+
+function frame(){
+  const W = cv.width, H = cv.height;
+  ctx.save(); ctx.translate(W,0); ctx.scale(-1,1); ctx.drawImage(video,0,0,W,H); ctx.restore();
+  const res = handsResult, hud = $('hud');
+  let pts = [];
+  if (res && res.multiHandLandmarks && res.multiHandLandmarks.length){
+    res.multiHandLandmarks.forEach(hl=>{
+      [4,8].forEach(i=>pts.push({x:(1-hl[i].x)*W,y:hl[i].y*H}));
+    });
+  }
+  if (pts.length === 4){
+    const cx=pts.reduce((a,p)=>a+p.x,0)/4, cy=pts.reduce((a,p)=>a+p.y,0)/4;
+    let q=pts.slice().sort((a,b)=>Math.atan2(a.y-cy,a.x-cx)-Math.atan2(b.y-cy,b.x-cx));
+    if (quad){
+      let best=0,bd=1e18;
+      for(let k=0;k<4;k++){let d=0;for(let j=0;j<4;j++){const p=q[(j+k)%4];d+=Math.hypot(p.x-quad[j].x,p.y-quad[j].y);}if(d<bd){bd=d;best=k;}}
+      const o=q.map((_,j)=>q[(j+best)%4]);
+      quad=o.map((p,j)=>({x:quad[j].x+(p.x-quad[j].x)*.5,y:quad[j].y+(p.y-quad[j].y)*.5}));
+    } else quad=q;
+    lastSeen=performance.now();
+  } else if (performance.now()-lastSeen>250) quad=null;
+  const r = quad ? (()=>{const xs=quad.map(p=>p.x),ys=quad.map(p=>p.y);
+    return {x1:clamp(Math.min(...xs),0,W-8),y1:clamp(Math.min(...ys),0,H-8),x2:clamp(Math.max(...xs),8,W),y2:clamp(Math.max(...ys),8,H)};})() : null;
+  if (r && r.x2-r.x1>30 && r.y2-r.y1>30){
+    applyPortal(r);
+    if(auto && performance.now()-lastSwitch>3500){setFilter((cur+1)%FILTERS.length);lastSwitch=performance.now();}
+    hud.textContent = FILTERS[cur].name;
+  } else hud.textContent = pts.length ? 'Show both hands' : 'Raise both hands';
+  if (hands && !busy && video.readyState>=2){ busy = true;
+    hands.send({image:video}).then(()=>{busy=false}).catch(()=>{busy=false}); }
+  requestAnimationFrame(frame);
+}
+
+$('go').onclick = async () => {
+  const err = $('err'); err.textContent = '';
+  try {
+    if (typeof Hands === 'undefined') throw new Error('Hand tracking library did not load. Check your connection and reload.');
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
+    video.srcObject = stream; await video.play();
+    cv.width = video.videoWidth || 1280; cv.height = video.videoHeight || 720;
+    hands = new Hands({locateFile: f => 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f});
+    hands.setOptions({maxNumHands:2, modelComplexity:0, minDetectionConfidence:.6, minTrackingConfidence:.6});
+    hands.onResults(r => { handsResult = r; });
+    $('go').textContent = 'Loading hand model…';
+    await hands.initialize();
+    $('intro').style.display = 'none';
+    requestAnimationFrame(frame);
+  } catch(e){
+    $('go').textContent = 'Try again';
+    err.textContent = (e && e.name==='NotAllowedError') ? 'Camera is blocked. Allow camera access for this page and try again.' : 'Could not start: ' + (e && e.message || e);
+  }
+};
+</script>
+</body>
+</html>
