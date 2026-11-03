@@ -17,7 +17,7 @@ video{display:none}
 .chip{flex:0 0 auto;border:1px solid #2a3046;background:var(--chip);color:var(--ink);padding:10px 16px;border-radius:999px;font:inherit;font-size:15px;cursor:pointer}
 .chip[aria-pressed="true"]{border-color:var(--glow);color:var(--glow)}
 .chip:focus-visible,#go:focus-visible{outline:2px solid var(--glow);outline-offset:2px}
-#hud{position:absolute;left:0;right:0;top:env(safe-area-inset-top,0px);padding:12px 16px;font-size:14px;color:var(--ink);text-shadow:0 1px 4px #000;pointer-events:none}
+#hud{font-size:22px;font-weight:700;position:absolute;left:0;right:0;top:env(safe-area-inset-top,0px);padding:12px 16px;font-size:22px;font-weight:700;color:var(--ink);text-shadow:0 1px 4px #000;pointer-events:none}
 #intro{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:32px;text-align:center;background:var(--bg)}
 #intro h1{font-size:clamp(34px,7vw,64px);margin:0;letter-spacing:-.02em;font-weight:700}
 #intro p{margin:0;max-width:34ch;color:var(--dim);font-size:17px;line-height:1.5}
@@ -69,10 +69,13 @@ const FILTERS = [
       d[i]=clamp(m[0]*r+m[1]*g+m[2]*b);d[i+1]=clamp(m[3]*r+m[4]*g+m[5]*b);d[i+2]=clamp(m[6]*r+m[7]*g+m[8]*b);}}},
   {name:'Red', s:3, fn(im){const d=im.data;for(let i=0;i<d.length;i+=4){d[i+1]=0;d[i+2]=0;}}}
 ];
-let cur = 0;
+let cur = 0, auto = true, lastSwitch = performance.now(), flash = 0, sparks = [];
 const bar = $('bar');
-FILTERS.forEach((f,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=f.name;
-  b.setAttribute('aria-pressed', i===0);b.onclick=()=>{cur=i;[...bar.children].forEach((c,j)=>c.setAttribute('aria-pressed',j===i));};bar.appendChild(b);});
+const autoChip = document.createElement('button');autoChip.className='chip';autoChip.textContent='Auto';autoChip.setAttribute('aria-pressed',true);
+autoChip.onclick=()=>{auto=!auto;lastSwitch=performance.now();autoChip.setAttribute('aria-pressed',auto);};bar.appendChild(autoChip);
+function setFilter(i){cur=i;flash=1;[...bar.children].forEach((c,j)=>{if(j>0)c.setAttribute('aria-pressed',j-1===i);});}
+FILTERS.forEach((f,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=f.name;b.setAttribute('aria-pressed',i===0);
+  b.onclick=()=>{auto=false;autoChip.setAttribute('aria-pressed',false);setFilter(i);};bar.appendChild(b);});
 
 // ---- portal rectangle (smoothed) ----
 let rect = null, lastSeen = 0, hands = null, busy = false, handsResult = null;
@@ -112,9 +115,16 @@ function frame(){
   if (rect && rect.x2-rect.x1>30 && rect.y2-rect.y1>30){
     const r={x1:clamp(rect.x1,0,W-8),y1:clamp(rect.y1,0,H-8),x2:clamp(rect.x2,8,W),y2:clamp(rect.y2,8,H)};
     applyPortal(r);
+    if(auto && performance.now()-lastSwitch>3500){setFilter((cur+1)%FILTERS.length);lastSwitch=performance.now();}
+    for(let k=0;k<4;k++){const e=Math.random()*4|0,t=Math.random();let x,y;
+      if(e<2){x=r.x1+(r.x2-r.x1)*t;y=e?r.y2:r.y1;}else{y=r.y1+(r.y2-r.y1)*t;x=e==2?r.x1:r.x2;}
+      sparks.push({x,y,vx:(Math.random()-.5)*4,vy:(Math.random()-.5)*4-1.5,l:1});}
+    if(flash>0){ctx.fillStyle='rgba(255,255,255,'+(flash*.7)+')';ctx.fillRect(r.x1,r.y1,r.x2-r.x1,r.y2-r.y1);flash=Math.max(0,flash-.08);}
     ctx.fillStyle='#7cf3d0'; pts.forEach(p=>{ctx.beginPath();ctx.arc(p.x,p.y,W/120+4,0,7);ctx.fill();});
     hud.textContent = FILTERS[cur].name;
   } else hud.textContent = pts.length ? 'Show both hands' : 'Raise both hands';
+  sparks=sparks.filter(p=>p.l>0);ctx.fillStyle='#7cf3d0';
+  sparks.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.l-=.03;ctx.globalAlpha=Math.max(p.l,0);ctx.beginPath();ctx.arc(p.x,p.y,W/260+1,0,7);ctx.fill();});ctx.globalAlpha=1;
   if (hands && !busy && video.readyState>=2){ busy = true;
     hands.send({image:video}).then(()=>{busy=false}).catch(()=>{busy=false}); }
   requestAnimationFrame(frame);
